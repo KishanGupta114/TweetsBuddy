@@ -3,126 +3,110 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { Category, Tweet } from "../types";
 
 export class GeminiService {
-  private ai: GoogleGenAI;
-
-  constructor() {
-    this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+  private getClient() {
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) {
+      console.error("Gemini API Key is missing! Please set API_KEY in your environment variables.");
+      return null;
+    }
+    return new GoogleGenAI({ apiKey });
   }
 
-  async fetchViralContent(category: Category, time: string): Promise<Tweet[]> {
-    const prompt = `Find the most VIRAL and RECENT tech tweets and memes from the last ${time} on X (Twitter).
-    
-    Topic: ${category === Category.ALL ? 'Software engineering, AI, developer humor, and tech hardware news' : category}.
-
-    CRITICAL DATA REQUIREMENTS:
-    1. SEARCH: Use Google Search to find actual live posts on x.com.
-    2. STATUS URL: Every item MUST have a direct URL: https://x.com/[username]/status/[numeric_id]. 
-       If unsure of the ID, use: https://x.com/search?q=from:[handle] [snippet]
-    3. MEDIA/IMAGES: Prioritize posts with visual content (memes, charts, code snippets). 
-       You MUST find the direct image source URL (typically starting with https://pbs.twimg.com/media/...) and put it in 'imageUrl'.
-       Do NOT provide website URLs or page links in the 'imageUrl' field. Only direct image files.
-    4. HANDLE: The user handle without @.
-
-    Return 6-8 items as a JSON array.`;
-
+  private extractJson(text: string): any[] {
     try {
-      const response = await this.ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                author: { type: Type.STRING },
-                handle: { type: Type.STRING, description: "Username without @" },
-                content: { type: Type.STRING },
-                url: { type: Type.STRING, description: "Direct status link or precise search link" },
-                imageUrl: { type: Type.STRING, description: "Direct image file URL (e.g. pbs.twimg.com)" },
-                likes: { type: Type.NUMBER },
-                retweets: { type: Type.NUMBER },
-                replies: { type: Type.NUMBER },
-                category: { type: Type.STRING },
-              },
-              required: ['author', 'handle', 'content', 'url', 'category']
-            }
-          }
-        },
-      });
-
-      const text = response.text || '[]';
-      const parsedData = JSON.parse(text);
-      
-      return parsedData.map((t: any) => {
-        let finalUrl = t.url ? t.url.trim() : '';
-        const isDirectStatus = /x\.com\/.+\/status\/\d+/.test(finalUrl);
-        
-        if (!isDirectStatus) {
-          const cleanContent = t.content.replace(/[^\w\s]/gi, '').substring(0, 40);
-          finalUrl = `https://x.com/search?q=${encodeURIComponent(`from:${t.handle} ${cleanContent}`)}&f=live`;
-        }
-
-        let validatedImageUrl = undefined;
-        if (t.imageUrl && typeof t.imageUrl === 'string' && t.imageUrl.startsWith('http')) {
-          const isDirectImage = /\.(jpg|jpeg|png|webp|gif)$/i.test(t.imageUrl) || t.imageUrl.includes('twimg.com');
-          if (isDirectImage) {
-            validatedImageUrl = t.imageUrl;
-          }
-        }
-
-        return {
-          ...t,
-          id: Math.random().toString(36).substr(2, 9),
-          timestamp: 'Trending Now',
-          category: t.category as Category || Category.TECH_INFO,
-          isViral: true,
-          url: finalUrl,
-          imageUrl: validatedImageUrl
-        };
-      });
-    } catch (error) {
-      console.error("Error fetching content:", error);
+      // Find the first '[' and last ']' to extract the JSON array
+      const start = text.indexOf('[');
+      const end = text.lastIndexOf(']');
+      if (start !== -1 && end !== -1) {
+        const jsonStr = text.substring(start, end + 1);
+        return JSON.parse(jsonStr);
+      }
+      return [];
+    } catch (e) {
+      console.error("Failed to parse JSON from response:", e);
       return [];
     }
   }
 
-  async fetchMemeImages(): Promise<Tweet[]> {
-    const prompt = `Search for the latest, most popular visual tech memes on X (Twitter).
-    Focus specifically on: Programming humor, IT struggles, Computer Science jokes, and AI memes.
-    
-    CRITICAL: Only return items that have a direct image URL (pbs.twimg.com). 
-    I need visual content only.
-    
-    Return 12 items as a JSON array.`;
-
+  private async withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 2000): Promise<T> {
     try {
-      const response = await this.ai.models.generateContent({
+      return await fn();
+    } catch (error: any) {
+      const errorMsg = error?.message || error?.toString() || "";
+      const isRateLimit = errorMsg.includes('429') || error?.status === 429;
+      
+      if (isRateLimit && retries > 0) {
+        console.warn(`Rate limit hit (429). Retrying in ${delay}ms... (${retries} attempts left)`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.withRetry(fn, retries - 1, delay * 2);
+      }
+      throw error;
+    }
+  }
+
+  async fetchViralContent(category: Category, time: string): Promise<Tweet[]> {
+    return this.withRetry(async () => {
+      const ai = this.getClient();
+      if (!ai) return [];
+
+      const prompt = `Find 6-8 of the most recent viral tech posts from X (formerly Twitter) about ${category === Category.ALL ? 'Software Engineering, AI, and Tech News' : category} from the last ${time}.
+      
+      Instructions:
+      1. Use Google Search to find real, existing posts.
+      2. Provide a variety of content: news, humor, and threads.
+      3. For each item, provide: author name, a handle (no @), the tweet content, and a direct URL to the post.
+      4. If you find a direct image URL (pbs.twimg.com), include it in 'imageUrl'. If not, leave it null.
+      
+      Output the results ONLY as a valid JSON array of objects with keys: author, handle, content, url, imageUrl, likes, retweets, replies, category.`;
+
+      const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                author: { type: Type.STRING },
-                handle: { type: Type.STRING },
-                content: { type: Type.STRING },
-                url: { type: Type.STRING },
-                imageUrl: { type: Type.STRING, description: "MUST be a direct pbs.twimg.com image URL" },
-              },
-              required: ['author', 'imageUrl', 'url']
-            }
-          }
+          // NOTE: responseMimeType: "application/json" is NOT supported when using tools like googleSearch
         },
       });
 
-      const parsedData = JSON.parse(response.text || '[]');
+      const text = response.text || "";
+      const parsedData = this.extractJson(text);
+      
+      // Also extract grounding URLs as per guidelines
+      const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+      const sources = groundingChunks
+        .map((chunk: any) => chunk.web?.uri)
+        .filter(Boolean);
+
+      return parsedData.map((t: any) => ({
+        ...t,
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: 'Trending',
+        category: t.category as Category || Category.TECH_INFO,
+        isViral: true,
+        // Optional: store sources if needed
+        sources: sources.length > 0 ? sources : undefined
+      }));
+    });
+  }
+
+  async fetchMemeImages(): Promise<Tweet[]> {
+    return this.withRetry(async () => {
+      const ai = this.getClient();
+      if (!ai) return [];
+
+      const prompt = `Find 10-12 visual tech memes currently trending on X.com. 
+      Focus on coding humor, AI jokes, and developer life.
+      Return the data ONLY as a valid JSON array of objects with: author, handle, content, url, and imageUrl (must be a pbs.twimg.com link).`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+        },
+      });
+
+      const parsedData = this.extractJson(response.text || "");
       return parsedData.map((t: any) => ({
         ...t,
         id: Math.random().toString(36).substr(2, 9),
@@ -130,19 +114,17 @@ export class GeminiService {
         timestamp: 'Hot',
         likes: 0, retweets: 0, replies: 0, isViral: true
       })).filter((t: any) => t.imageUrl);
-    } catch (error) {
-      console.error("Error fetching memes:", error);
-      return [];
-    }
+    });
   }
 
   async rewriteTweet(content: string): Promise<{ professional: string; casual: string; humorous: string }> {
-    const prompt = `Rewrite this tech tweet in 3 styles (Professional, Casual, Humorous): "${content}"`;
+    return this.withRetry(async () => {
+      const ai = this.getClient();
+      if (!ai) return { professional: content, casual: content, humorous: content };
 
-    try {
-      const response = await this.ai.models.generateContent({
+      const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: prompt,
+        contents: `Rewrite this tweet in Professional, Casual, and Humorous styles: "${content}"`,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -157,11 +139,12 @@ export class GeminiService {
         }
       });
 
-      return JSON.parse(response.text || '{}');
-    } catch (error) {
-      console.error("Error rewriting tweet:", error);
-      return { professional: content, casual: content, humorous: content };
-    }
+      try {
+        return JSON.parse(response.text || '{}');
+      } catch (e) {
+        return { professional: content, casual: content, humorous: content };
+      }
+    });
   }
 }
 
