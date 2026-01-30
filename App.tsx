@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { Category, TimeRange, Tweet } from './types';
 import { geminiService } from './services/geminiService';
@@ -26,22 +25,16 @@ const App: React.FC = () => {
       if (activeTab === 'feed') {
         const data = await geminiService.fetchViralContent(category, timeRange);
         setTweets(data);
-        if (data.length === 0) {
-          setError("No viral content found. Try a different category or wait a moment.");
-        }
       } else {
         const data = await geminiService.fetchMemeImages();
         setMemes(data);
-        if (data.length === 0) {
-          setError("No memes found. Grounding might be temporarily limited.");
-        }
       }
     } catch (e: any) {
       const isQuota = e?.message?.includes('429') || e?.status === 429 || e?.toString().includes('RESOURCE_EXHAUSTED');
       if (isQuota) {
-        setError("AI Quota Exceeded: The free tier is temporarily busy. Please wait 60 seconds and try again.");
+        setError("Rate Limit: The AI is busy. Showing cached results if available. Please wait a minute before manual refresh.");
       } else {
-        setError("Connection issue: Please check your internet or API configuration.");
+        setError("Unable to connect to AI services. Please check your connection.");
       }
       console.error("Fetch Error:", e);
     }
@@ -51,10 +44,6 @@ const App: React.FC = () => {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
-
-  const handleRewrite = (tweet: Tweet) => {
-    setRewritingTweet(tweet);
-  };
 
   return (
     <div className="flex flex-col min-h-screen bg-black text-white max-w-2xl mx-auto border-x border-gray-800 relative">
@@ -74,36 +63,34 @@ const App: React.FC = () => {
       )}
 
       <main className="flex-1 pb-10 overflow-y-auto custom-scrollbar px-4 pt-4">
-        {isLoading ? (
+        {error && (
+          <div className="mb-4 bg-yellow-500/10 border border-yellow-500/20 p-4 rounded-xl text-sm text-yellow-200 flex items-center gap-3">
+             <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 shrink-0 text-yellow-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+             {error}
+          </div>
+        )}
+
+        {isLoading && (activeTab === 'feed' ? tweets.length === 0 : memes.length === 0) ? (
           <div className="flex flex-col items-center justify-center h-64 space-y-4">
             <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
             <p className="text-gray-400 font-medium animate-pulse text-center px-6">
-              Fetching real-time content... (This avoids the API if recently cached)
+              Retrieving the latest tech trends...
             </p>
           </div>
-        ) : error ? (
-          <div className="text-center py-20 px-6">
-            <div className="bg-red-500/10 border border-red-500/20 p-6 rounded-2xl">
-              <p className="text-red-400 font-bold mb-4">{error}</p>
-              <button 
-                onClick={fetchData}
-                className="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-xl font-bold transition-all shadow-lg shadow-red-500/20"
-              >
-                Retry Now
-              </button>
-            </div>
-          </div>
         ) : activeTab === 'memes' ? (
-          <MemeGallery memes={memes} isLoading={isLoading} />
+          <MemeGallery memes={memes} isLoading={isLoading && memes.length === 0} />
         ) : (
           <div className="space-y-4">
             {tweets.map(tweet => (
               <TweetCard 
                 key={tweet.id} 
                 tweet={tweet} 
-                onRewrite={() => handleRewrite(tweet)}
+                onRewrite={() => setRewritingTweet(tweet)}
               />
             ))}
+            {tweets.length === 0 && !isLoading && !error && (
+               <p className="text-center py-20 text-gray-500">No content found. Try changing filters.</p>
+            )}
           </div>
         )}
       </main>
