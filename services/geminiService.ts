@@ -6,10 +6,14 @@ interface CacheEntry {
   timestamp: number;
 }
 
-const CACHE_TTL = 15 * 60 * 1000; // 15 minutes persistent cache
-const STORAGE_PREFIX = 'x_viral_cache_';
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes cache
+const SEARCH_THROTTLE = 30 * 1000; // 30 seconds between actual API searches
+const STORAGE_PREFIX = 'x_viral_cache_v2_';
 
 export class GeminiService {
+  private lastRequestTime = 0;
+  private isRequestInProgress = false;
+
   private getClient() {
     const apiKey = process.env.API_KEY;
     if (!apiKey) return null;
@@ -30,26 +34,35 @@ export class GeminiService {
     }
   }
 
-  private async withRetry<T>(fn: () => Promise<T>, cacheKey: string, retries = 2, delay = 5000): Promise<T> {
+  private async withRetry<T>(fn: () => Promise<T>, cacheKey: string, retries = 3, delay = 10000): Promise<T> {
+    // Prevent multiple simultaneous requests
+    while (this.isRequestInProgress) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+
     try {
-      return await fn();
+      this.isRequestInProgress = true;
+      const result = await fn();
+      this.lastRequestTime = Date.now();
+      return result;
     } catch (error: any) {
       const errorMsg = error?.message || "";
       const isQuota = errorMsg.includes('429') || error?.status === 429 || errorMsg.includes('RESOURCE_EXHAUSTED');
       
-      // If we hit a rate limit and have cached data (even if expired), return it as a fallback
       const staleData = this.getCache(cacheKey, true);
       if (isQuota && staleData) {
-        console.warn("429 Hit. Serving stale data from cache.");
+        console.warn("Rate limit reached. Serving stale data.");
         return staleData as T;
       }
 
       if (isQuota && retries > 0) {
-        const jitter = Math.random() * 2000;
+        const jitter = Math.random() * 5000;
         await new Promise(r => setTimeout(r, delay + jitter));
-        return this.withRetry(fn, cacheKey, retries - 1, delay * 2);
+        return this.withRetry(fn, cacheKey, retries - 1, delay * 1.5);
       }
       throw error;
+    } finally {
+      this.isRequestInProgress = false;
     }
   }
 
@@ -72,34 +85,41 @@ export class GeminiService {
       const entry: CacheEntry = { data, timestamp: Date.now() };
       localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(entry));
     } catch (e) {
-      console.warn("Storage full or unavailable", e);
+      console.warn("LocalStorage failed", e);
     }
   }
 
   async fetchViralContent(category: Category, time: string): Promise<Tweet[]> {
     const cacheKey = `viral_${category}_${time}`;
     const cached = this.getCache(cacheKey);
-    if (cached) return cached;
+    
+    // Throttle: If we have a cache and it's too soon since the last API call, just use the cache
+    const timeSinceLastRequest = Date.now() - this.lastRequestTime;
+    if (cached && timeSinceLastRequest < SEARCH_THROTTLE) {
+      console.debug("Throttled: Using cache to save quota.");
+      return cached;
+    }
 
     return this.withRetry(async () => {
       const ai = this.getClient();
       if (!ai) return [];
 
-      const prompt = `Find 6-8 viral tech posts from X (Twitter) about ${category === Category.ALL ? 'Tech' : category} in the last ${time}. 
-      Use Google Search. Return ONLY a JSON array of objects with: author, handle, content, url, imageUrl, likes, retweets, replies, category.`;
+      const prompt = `Find 6-8 trending tech posts on X (Twitter) about ${category === Category.ALL ? 'Software & AI' : category} from the last ${time}. 
+      Return ONLY a JSON array: author, handle, content, url, imageUrl, likes, retweets, replies. No markdown.`;
 
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }],
-          thinkingConfig: { thinkingBudget: 0 } // Optimization: disable thinking to save latency/tokens
+          thinkingConfig: { thinkingBudget: 0 }
         },
       });
 
       const results = this.extractJson(response.text || "").map(t => ({
         ...t,
         id: Math.random().toString(36).substr(2, 9),
+        category: category === Category.ALL ? Category.TECH_INFO : category,
         timestamp: 'Trending',
         isViral: true
       }));
@@ -112,13 +132,17 @@ export class GeminiService {
   async fetchMemeImages(): Promise<Tweet[]> {
     const cacheKey = `memes_trending`;
     const cached = this.getCache(cacheKey);
-    if (cached) return cached;
+    
+    const timeSinceLastRequest = Date.now() - this.lastRequestTime;
+    if (cached && timeSinceLastRequest < SEARCH_THROTTLE) {
+      return cached;
+    }
 
     return this.withRetry(async () => {
       const ai = this.getClient();
       if (!ai) return [];
 
-      const prompt = `Find 10 trending visual tech memes on X. Return ONLY JSON array: author, handle, content, url, imageUrl (pbs.twimg.com).`;
+      const prompt = `Find 8 hot visual tech memes on X. Return ONLY JSON array: author, handle, content, url, imageUrl (must be pbs.twimg.com).`;
 
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
@@ -170,7 +194,7 @@ export class GeminiService {
       } catch {
         return { professional: content, casual: content, humorous: content };
       }
-    }, `rewrite_${content.substring(0, 20)}`);
+    }, `rewrite_${content.substring(0, 15)}`);
   }
 }
 

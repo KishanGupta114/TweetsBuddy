@@ -32,9 +32,9 @@ const App: React.FC = () => {
     } catch (e: any) {
       const isQuota = e?.message?.includes('429') || e?.status === 429 || e?.toString().includes('RESOURCE_EXHAUSTED');
       if (isQuota) {
-        setError("Rate Limit: The AI is busy. Showing cached results if available. Please wait a minute before manual refresh.");
+        setError("Rate Limit: The Gemini API is currently overloaded. Showing cached trends. Please wait 30 seconds.");
       } else {
-        setError("Unable to connect to AI services. Please check your connection.");
+        setError("AI connection interrupted. Try refreshing the page.");
       }
       console.error("Fetch Error:", e);
     }
@@ -64,8 +64,8 @@ const App: React.FC = () => {
 
       <main className="flex-1 pb-10 overflow-y-auto custom-scrollbar px-4 pt-4">
         {error && (
-          <div className="mb-4 bg-yellow-500/10 border border-yellow-500/20 p-4 rounded-xl text-sm text-yellow-200 flex items-center gap-3">
-             <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 shrink-0 text-yellow-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+          <div className="mb-4 bg-blue-500/10 border border-blue-500/20 p-4 rounded-xl text-sm text-blue-200 flex items-center gap-3">
+             <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 shrink-0 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
              {error}
           </div>
         )}
@@ -74,7 +74,7 @@ const App: React.FC = () => {
           <div className="flex flex-col items-center justify-center h-64 space-y-4">
             <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
             <p className="text-gray-400 font-medium animate-pulse text-center px-6">
-              Retrieving the latest tech trends...
+              Checking the pulse of Tech Twitter...
             </p>
           </div>
         ) : activeTab === 'memes' ? (
@@ -88,9 +88,6 @@ const App: React.FC = () => {
                 onRewrite={() => setRewritingTweet(tweet)}
               />
             ))}
-            {tweets.length === 0 && !isLoading && !error && (
-               <p className="text-center py-20 text-gray-500">No content found. Try changing filters.</p>
-            )}
           </div>
         )}
       </main>
