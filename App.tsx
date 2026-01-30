@@ -16,33 +16,32 @@ const App: React.FC = () => {
   const [memes, setMemes] = useState<Tweet[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isRetrying, setIsRetrying] = useState(false);
   const [rewritingTweet, setRewritingTweet] = useState<Tweet | null>(null);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     setError(null);
-    setIsRetrying(false);
     
     try {
       if (activeTab === 'feed') {
         const data = await geminiService.fetchViralContent(category, timeRange);
         setTweets(data);
         if (data.length === 0) {
-          setError("No viral content found. Try changing filters.");
+          setError("No viral content found. Try a different category or wait a moment.");
         }
       } else {
         const data = await geminiService.fetchMemeImages();
         setMemes(data);
         if (data.length === 0) {
-          setError("No memes found at this moment.");
+          setError("No memes found. Grounding might be temporarily limited.");
         }
       }
     } catch (e: any) {
-      if (e?.message?.includes('429') || e?.status === 429) {
-        setError("High traffic: The AI is busy. We tried retrying, but the limit is still active. Please wait a minute.");
+      const isQuota = e?.message?.includes('429') || e?.status === 429 || e?.toString().includes('RESOURCE_EXHAUSTED');
+      if (isQuota) {
+        setError("AI Quota Exceeded: The free tier is temporarily busy. Please wait 60 seconds and try again.");
       } else {
-        setError("Something went wrong. Check your API key or connection.");
+        setError("Connection issue: Please check your internet or API configuration.");
       }
       console.error("Fetch Error:", e);
     }
@@ -79,7 +78,7 @@ const App: React.FC = () => {
           <div className="flex flex-col items-center justify-center h-64 space-y-4">
             <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
             <p className="text-gray-400 font-medium animate-pulse text-center px-6">
-              {isRetrying ? "Retrying due to high traffic..." : "Gemini is searching X for real-time gems..."}
+              Fetching real-time content... (This avoids the API if recently cached)
             </p>
           </div>
         ) : error ? (
@@ -90,7 +89,7 @@ const App: React.FC = () => {
                 onClick={fetchData}
                 className="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-xl font-bold transition-all shadow-lg shadow-red-500/20"
               >
-                Try Again Now
+                Retry Now
               </button>
             </div>
           </div>
